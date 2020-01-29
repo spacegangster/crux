@@ -209,13 +209,15 @@
    :args default-options})
 
 (defn index-documents
-  [indexer records]
-  (db/index-docs indexer (->> records
-                              (into {} (map (fn [^ConsumerRecord record]
-                                              [(c/new-id (.key record)) (.value record)]))))))
+  [indexer object-store records]
+  (let [docs (->> records
+                  (into {} (map (fn [^ConsumerRecord record]
+                                  [(c/new-id (.key record)) (.value record)]))))]
+    (db/put-objects object-store docs)
+    (db/index-docs indexer docs)))
 
 (def doc-indexing-consumer
-  {:start-fn (fn [{:keys [crux.kafka/admin-client crux.node/indexer]}
+  {:start-fn (fn [{:keys [crux.kafka/admin-client crux.node/indexer crux.node/object-store]}
                   {::keys [doc-topic doc-partitions group-id] :as options}]
                (ensure-topic-exists admin-client doc-topic doc-topic-config doc-partitions options)
                (kc/start-indexing-consumer {:indexer indexer
@@ -223,30 +225,31 @@
                                             :kafka-config (derive-kafka-config options)
                                             :group-id group-id
                                             :topic doc-topic
-                                            :index-fn (partial index-documents indexer)}))
-   :deps [:crux.node/indexer ::admin-client]
+                                            :index-fn (partial index-documents indexer object-store)}))
+   :deps [:crux.node/indexer :crux.node/object-store ::admin-client]
    :args default-options})
 
 (defn index-documents-from-txes
-  [indexer document-store records]
+  [indexer document-store object-store records]
   (doseq [^ConsumerRecord tx-record records]
     (let [content-hashes (->> (.lastHeader (.headers tx-record)
                                            (str :crux.tx/docs))
                               (.value)
                               (nippy/fast-thaw))]
       (let [docs (db/fetch-docs document-store content-hashes)]
+        (db/put-objects object-store docs)
         (db/index-docs indexer docs)))))
 
 (def doc-indexing-from-tx-topic-consumer
-  {:start-fn (fn [{:keys [crux.node/indexer crux.node/document-store]}
+  {:start-fn (fn [{:keys [crux.node/indexer crux.node/document-store crux.node/object-store]}
                   {::keys [tx-topic doc-group-id] :as options}]
                (kc/start-indexing-consumer {:indexer indexer
                                             :offsets :crux.tx-doc-log/consumer-state
                                             :kafka-config (derive-kafka-config options)
                                             :group-id doc-group-id
                                             :topic tx-topic
-                                            :index-fn (partial index-documents-from-txes indexer document-store)}))
-   :deps [:crux.node/indexer :crux.node/document-store ::tx-indexing-consumer]
+                                            :index-fn (partial index-documents-from-txes indexer document-store object-store)}))
+   :deps [:crux.node/indexer :crux.node/document-store :crux.node/object-store ::tx-indexing-consumer]
    :args (assoc default-options
                 ::doc-group-id {:doc "Kafka client group.id for ingesting documents using tx topic"
                                 :default (str "documents-" (group-name))

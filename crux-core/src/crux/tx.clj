@@ -347,8 +347,6 @@
                              (->> (vals docs-to-remove)
                                   (map #(idx/doc-predicate-stats % true))))]
 
-      (db/put-objects object-store docs)
-
       (bus/send bus {::bus/event-type ::indexed-docs, :doc-ids (set (keys docs))})
 
       (let [stats-fn ^Runnable #(idx/update-predicate-stats kv-store docs-stats)]
@@ -390,6 +388,7 @@
             (do
               (when-let [tombstones (not-empty (:tombstones res))]
                 (db/index-docs this tombstones)
+                (db/put-objects object-store tombstones)
                 (db/submit-docs document-store tombstones))
 
               (kv/store kv-store (->> (conj (->> (get-in res [:history :etxs]) (mapcat val) (mapcat etx->kvs))
