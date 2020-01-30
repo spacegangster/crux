@@ -206,11 +206,17 @@
          (or (nippy-thaw-message topic (message-key->message-id k) (kv/value i))
              (next-message i topic)))))))
 
-(defrecord MobergTxLog [event-log-kv]
-  db/DocumentStore
-  (submit-docs [this id-and-docs]
+(defrecord MobergTxLog [event-log-kv object-store]
+  db/ObjectStore
+  (put-objects [this id-and-docs]
     (doseq [[content-hash doc] id-and-docs]
       (send-message event-log-kv ::event-log content-hash doc {:crux.tx/sub-topic :docs})))
+  (get-single-object [this snapshot k]
+    (db/get-single-object object-store snapshot k))
+  (get-objects [this snapshot ks]
+    (db/get-objects object-store snapshot ks))
+  (known-keys? [this snapshot ks]
+    (db/known-keys? object-store snapshot ks))
 
   db/TxLog
   (submit-tx [this tx-ops]

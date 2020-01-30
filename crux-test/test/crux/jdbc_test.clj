@@ -57,8 +57,6 @@
                                {:builder-fn jdbcr/as-unqualified-lower-maps})))))
 (t/deftest test-docs-retention
   (let [tx-log (:tx-log *api*)
-        doc-store (:document-store *api*)
-
         doc {:crux.db/id (c/new-id :some-id) :a :b}
         doc-hash (str (c/new-id doc))
 
@@ -68,11 +66,11 @@
     (t/is (= [doc] (docs fj/*dbtype* (:ds (:tx-log *api*)) doc-hash)))
 
     (t/testing "Compaction"
-      (db/submit-docs tx-log [[doc-hash :some-val]])
+      (db/put-objects (:object-store *api*) [[doc-hash :some-val]])
       (t/is (= [doc] (docs fj/*dbtype* (:ds (:tx-log *api*)) doc-hash))))
 
     (t/testing "Eviction"
-      (db/submit-docs tx-log [[doc-hash {:crux.db/id :some-id :crux.db/evicted? true}]])
+      (db/put-objects (:object-store *api*) [[doc-hash {:crux.db/id :some-id :crux.db/evicted? true}]])
       (t/is (= [{:crux.db/id :some-id :crux.db/evicted? true}
                 {:crux.db/id :some-id :crux.db/evicted? true}] (docs fj/*dbtype* (:ds (:tx-log *api*)) doc-hash))))
 

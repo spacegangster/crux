@@ -19,7 +19,7 @@
 ;; tag::Indexer[]
 (defprotocol Indexer
   (index-docs [this docs])
-  (evict-docs [this docs])
+  (evict-docs [this content-hashes])
   (index-tx [this tx tx-events])
   (docs-indexed? [this content-hashes])
   (store-index-meta [this k v])
@@ -32,9 +32,6 @@
   (open-tx-log ^crux.api.ITxLog [this from-tx-id])
   (latest-submitted-tx [this]))
 ;; end::TxLog[]
-
-(defprotocol DocumentStore
-  (submit-docs [this id-and-docs]))
 
 ;; NOTE: The snapshot parameter here is an optimisation to avoid keep
 ;; opening snapshots and allow caching of iterators. A non-KV backed

@@ -42,8 +42,8 @@
     (p/start-event-log-consumer indexer object-store (moberg/map->MobergEventLogConsumer {:event-log-kv event-log-kv
                                                                                           :batch-size 100}))))
 
-(defn- start-moberg-event-log [{::keys [event-log-kv]} _]
-  (moberg/->MobergTxLog event-log-kv))
+(defn- start-moberg-event-log [{::keys [event-log-kv object-store]} _]
+  (moberg/->MobergTxLog event-log-kv object-store))
 
 (def topology
   (merge n/base-topology
@@ -68,6 +68,7 @@
           ::event-log-consumer {:start-fn start-event-log-consumer
                                 :deps [::event-log-kv :crux.node/indexer :crux.node/object-store]}
           :crux.node/tx-log {:start-fn start-moberg-event-log
-                             :deps [::event-log-kv]}
-          :crux.node/document-store {:start-fn (fn [{:keys [:crux.node/tx-log]} _] tx-log)
+                             :deps [::event-log-kv ::object-store]}
+          ::object-store 'crux.object-store/kv-object-store
+          :crux.node/object-store {:start-fn (fn [{:keys [:crux.node/tx-log]} _] tx-log)
                                      :deps [:crux.node/tx-log]}}))

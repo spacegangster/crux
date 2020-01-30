@@ -5,14 +5,13 @@
             [clojure.tools.logging :as log]
             [crux.codec :as c]
             [crux.db :as db]
-            [crux.kv :as kv]
             [crux.io :as cio]
             [crux.kafka.consumer :as kc]
+            [crux.kv :as kv]
             [crux.node :as n]
             [crux.tx :as tx]
             [taoensso.nippy :as nippy])
-  (:import crux.db.DocumentStore
-           crux.kafka.nippy.NippySerializer
+  (:import crux.kafka.nippy.NippySerializer
            java.io.Closeable
            java.time.Duration
            [java.util Date Map]
@@ -218,8 +217,8 @@
   (let [docs (->> records
                   (into {} (map (fn [^ConsumerRecord record]
                                   [(c/new-id (.key record)) (.value record)]))))]
-    (assert (instance? KafkaDocumentStore object-store)
-      (db/put-objects (:object-store object-store) docs))
+    (assert (instance? KafkaDocumentStore object-store))
+    (db/put-objects (:object-store object-store) docs)
     (db/index-docs indexer docs)))
 
 (def doc-indexing-consumer

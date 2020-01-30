@@ -24,7 +24,7 @@
                                          (->> doc-msgs
                                               (into {} (map (fn [^Message m]
                                                               [(c/new-id (.key m)) (.body m)])))))]
-                      (db/put-objects object-store docs)
+                      (db/put-objects (:object-store object-store) docs)
                       (db/index-docs indexer docs))
 
                     (doseq [^Message tx-msg tx-msgs]

@@ -338,16 +338,11 @@
           (.submit stats-executor stats-fn)
           (stats-fn)))))
 
-  (evict-docs [_ tombstones]
-    (when-let [missing-ids (seq (remove :crux.db/id (vals tombstones)))]
-      (throw (IllegalArgumentException.
-              (str "Missing required attribute :crux.db/id: " (cio/pr-edn-str missing-ids)))))
-
-    (bus/send bus {::bus/event-type ::evicting-docs, :doc-ids (set (keys tombstones))})
+  (evict-docs [_ content-hashes]
+    (bus/send bus {::bus/event-type ::evicting-docs, :doc-ids (set content-hashes)})
 
     (let [docs-to-remove (with-open [snapshot (kv/new-snapshot kv-store)]
-                           (let [existing-docs (db/get-objects object-store snapshot (keys tombstones))]
-                             (println "Unindexoing existing docs" existing-docs)
+                           (let [existing-docs (db/get-objects object-store snapshot content-hashes)]
                              (->> existing-docs
                                   (mapcat (fn [[k doc]] (idx/doc-idx-keys k doc)))
                                   (idx/delete-doc-idx-keys kv-store))
@@ -357,7 +352,7 @@
           docs-stats (->> (vals docs-to-remove)
                           (map #(idx/doc-predicate-stats % true)))]
 
-      (bus/send bus {::bus/event-type ::evicted-docs, :doc-ids (set (keys tombstones))})
+      (bus/send bus {::bus/event-type ::evicted-docs, :doc-ids (set content-hashes)})
 
       (let [stats-fn ^Runnable #(idx/update-predicate-stats kv-store docs-stats)]
         (if stats-executor
@@ -396,7 +391,7 @@
           (if (not= res ::aborted)
             (do
               (when-let [tombstones (not-empty (:tombstones res))]
-                (db/evict-docs this tombstones)
+                (db/evict-docs this (keys tombstones))
                 (db/put-objects object-store tombstones))
 
               (kv/store kv-store (->> (conj (->> (get-in res [:history :etxs]) (mapcat val) (mapcat etx->kvs))
@@ -416,9 +411,7 @@
            (let [docs (db/get-objects object-store snapshot content-hashes)]
              (every? (fn [content-hash]
                        (if-let [doc (get docs content-hash)]
-                         (do
-                           (println doc (idx/doc-indexed? snapshot (:crux.db/id doc) content-hash))
-                           (idx/doc-indexed? snapshot (:crux.db/id doc) content-hash))
+                         (idx/doc-indexed? snapshot (:crux.db/id doc) content-hash)
                          ;; We can assume the doc is evicted:
                          true))
                      content-hashes)))))
