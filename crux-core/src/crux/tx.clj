@@ -234,8 +234,7 @@
 (def evict-time-ranges-env-var "CRUX_EVICT_TIME_RANGES")
 (def ^:dynamic *evict-all-on-legacy-time-ranges?* (= (System/getenv evict-time-ranges-env-var) "EVICT_ALL"))
 
-(defmethod index-tx-event :crux.tx/evict [[op k & legacy-args] tx
-                                          {:keys [history ^crux.db.DocumentStore document-store] :as deps}]
+(defmethod index-tx-event :crux.tx/evict [[op k & legacy-args] tx {:keys [history] :as deps}]
   (let [eid (c/new-id k)
         content-hashes (all-content-hashes history eid)]
     {:pre-commit-fn #(cond
@@ -309,7 +308,7 @@
 
 (def ^:dynamic *current-tx*)
 
-(defrecord KvIndexer [object-store kv-store tx-log document-store bus ^ExecutorService stats-executor]
+(defrecord KvIndexer [object-store kv-store tx-log bus ^ExecutorService stats-executor]
   Closeable
   (close [_]
     (when stats-executor
@@ -335,6 +334,7 @@
           docs-to-remove (when (seq docs-to-evict)
                            (with-open [snapshot (kv/new-snapshot kv-store)]
                              (let [existing-docs (db/get-objects object-store snapshot (keys docs-to-evict))]
+                               (println "Unindexoing existing docs" existing-docs)
                                (->> existing-docs
                                     (mapcat (fn [[k doc]] (idx/doc-idx-keys k doc)))
                                     (idx/delete-doc-idx-keys kv-store))
@@ -365,7 +365,6 @@
         (let [deps {:object-store object-store
                     :kv-store kv-store
                     :tx-log tx-log
-                    :document-store document-store
                     :indexer this
                     :snapshot snapshot}
 
@@ -387,9 +386,9 @@
           (if (not= res ::aborted)
             (do
               (when-let [tombstones (not-empty (:tombstones res))]
+                ;; that should 100% kill it:
                 (db/index-docs this tombstones)
-                (db/put-objects object-store tombstones)
-                (db/submit-docs document-store tombstones))
+                (db/put-objects object-store tombstones))
 
               (kv/store kv-store (->> (conj (->> (get-in res [:history :etxs]) (mapcat val) (mapcat etx->kvs))
                                             (idx/meta-kv :crux.tx/latest-completed-tx tx))
@@ -408,7 +407,9 @@
            (let [docs (db/get-objects object-store snapshot content-hashes)]
              (every? (fn [content-hash]
                        (if-let [doc (get docs content-hash)]
-                         (idx/doc-indexed? snapshot (:crux.db/id doc) content-hash)
+                         (do
+                           (println doc (idx/doc-indexed? snapshot (:crux.db/id doc) content-hash))
+                           (idx/doc-indexed? snapshot (:crux.db/id doc) content-hash))
                          ;; We can assume the doc is evicted:
                          true))
                      content-hashes)))))
@@ -428,9 +429,9 @@
 
 (def kv-indexer
   {:start-fn (fn [{:crux.node/keys [object-store kv-store tx-log document-store bus]} args]
-               (->KvIndexer object-store kv-store tx-log document-store bus
+               (->KvIndexer object-store kv-store tx-log bus
                             (Executors/newSingleThreadExecutor (cio/thread-factory "crux.tx.update-stats-thread"))))
-   :deps [:crux.node/kv-store :crux.node/tx-log :crux.node/document-store :crux.node/object-store :crux.node/bus]})
+   :deps [:crux.node/kv-store :crux.node/tx-log :crux.node/object-store :crux.node/bus]})
 
 (defn await-tx [indexer {::keys [tx-id] :as tx} timeout-ms]
   (let [seen-tx (atom nil)]

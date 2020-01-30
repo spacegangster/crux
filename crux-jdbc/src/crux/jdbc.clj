@@ -77,9 +77,9 @@
 (defn- evict-docs! [ds k tombstone]
   (jdbc/execute! ds ["UPDATE tx_events SET V = ?, COMPACTED = 1 WHERE TOPIC = 'docs' AND EVENT_KEY = ?" tombstone k]))
 
-(defrecord JdbcTxLog [ds dbtype]
-  db/DocumentStore
-  (submit-docs [this id-and-docs]
+(defrecord JdbcTxLog [ds dbtype object-store]
+  db/ObjectStore
+  (put-objects [this id-and-docs]
     (doseq [[id doc] id-and-docs
             :let [id (str id)]]
       (if (idx/evicted-doc? doc)
@@ -89,6 +89,13 @@
         (if-not (doc-exists? ds id)
           (insert-event! ds id doc "docs")
           (log/infof "Skipping doc insert %s" id)))))
+
+  (get-single-object [this snapshot k]
+    (db/get-single-object object-store snapshot k))
+  (get-objects [this snapshot ks]
+    (db/get-objects object-store snapshot ks))
+  (known-keys? [this snapshot ks]
+    (db/known-keys? object-store snapshot ks))
 
   db/TxLog
   (submit-tx [this tx-ops]
@@ -169,8 +176,8 @@
       (setup-schema! dbtype ds)
       ds)))
 
-(defn- start-tx-log [{::keys [ds]} {::keys [dbtype]}]
-  (map->JdbcTxLog {:ds ds :dbtype dbtype}))
+(defn- start-tx-log [{::keys [ds object-store]} {::keys [dbtype]}]
+  (map->JdbcTxLog {:ds ds :dbtype dbtype :object-store object-store}))
 
 (defn- start-event-log-consumer [{:keys [crux.node/indexer crux.node/object-store crux.jdbc/ds]} {::keys [dbtype]}]
   (p/start-event-log-consumer indexer object-store (JDBCEventLogConsumer. ds dbtype)))
@@ -185,7 +192,8 @@
                                              :crux.config/type :crux.config/string}}}
                       ::event-log-consumer {:start-fn start-event-log-consumer
                                             :deps [:crux.node/indexer :crux.node/object-store ::ds]}
+                      ::object-store 'crux.object-store/kv-object-store
                       :crux.node/tx-log {:start-fn start-tx-log
-                                         :deps [::ds]}
-                      :crux.node/document-store {:start-fn (fn [{:keys [:crux.node/tx-log]} _] tx-log)
-                                                 :deps [:crux.node/tx-log]}}))
+                                         :deps [::ds ::object-store]}
+                      :crux.node/object-store {:start-fn (fn [{:keys [:crux.node/tx-log]} _] tx-log)
+                                               :deps [:crux.node/tx-log]}}))

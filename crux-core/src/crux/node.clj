@@ -38,8 +38,7 @@
   (when @closed?
     (throw (IllegalStateException. "Crux node is closed"))))
 
-(defrecord CruxNode [kv-store tx-log document-store indexer object-store
-                     options close-fn status-fn closed? ^StampedLock lock]
+(defrecord CruxNode [kv-store tx-log indexer object-store options close-fn status-fn closed? ^StampedLock lock]
   ICruxAPI
   (db [this]
     (.db this nil nil))
@@ -99,7 +98,7 @@
   (submitTx [this tx-ops]
     (cio/with-read-lock lock
       (ensure-node-open this)
-      (db/submit-docs document-store (tx/tx-ops->id-and-docs tx-ops))
+      (db/put-objects object-store (tx/tx-ops->id-and-docs tx-ops))
       @(db/submit-tx tx-log tx-ops)))
 
   (hasTxCommitted [this {:keys [crux.tx/tx-id
@@ -168,7 +167,7 @@
   (submitTxAsync [this tx-ops]
     (cio/with-read-lock lock
       (ensure-node-open this)
-      (db/submit-docs document-store (tx/tx-ops->id-and-docs tx-ops))
+      (db/put-objects object-store (tx/tx-ops->id-and-docs tx-ops))
       (db/submit-tx tx-log tx-ops)))
 
   backup/INodeBackup
@@ -187,23 +186,21 @@
       (reset! closed? true))))
 
 (def ^:private node-component
-  {:start-fn (fn [{::keys [indexer document-store object-store tx-log kv-store]} node-opts]
+  {:start-fn (fn [{::keys [indexer object-store tx-log kv-store]} node-opts]
                (map->CruxNode {:options node-opts
                                :kv-store kv-store
                                :tx-log tx-log
                                :indexer indexer
-                               :document-store document-store
                                :object-store object-store
                                :closed? (atom false)
                                :lock (StampedLock.)}))
-   :deps #{::indexer ::kv-store ::bus ::document-store ::object-store ::tx-log}
+   :deps #{::indexer ::kv-store ::bus ::object-store ::tx-log}
    :args {:crux.tx-log/await-tx-timeout {:doc "Default timeout in milliseconds for waiting."
                                          :default 10000
                                          :crux.config/type :crux.config/nat-int}}})
 
 (def base-topology
   {::kv-store 'crux.kv.rocksdb/kv
-   ::object-store 'crux.object-store/kv-object-store
    ::indexer 'crux.tx/kv-indexer
    ::bus 'crux.bus/bus
    ::node 'crux.node/node-component})

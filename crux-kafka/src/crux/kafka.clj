@@ -5,6 +5,7 @@
             [clojure.tools.logging :as log]
             [crux.codec :as c]
             [crux.db :as db]
+            [crux.kv :as kv]
             [crux.io :as cio]
             [crux.kafka.consumer :as kc]
             [crux.node :as n]
@@ -93,7 +94,7 @@
    :crux.tx/tx-id (.offset record)
    :crux.tx/tx-time (Date. (.timestamp record))})
 
-(defrecord KafkaTxLog [^DocumentStore doc-store, ^KafkaProducer producer, ^KafkaConsumer latest-submitted-tx-consumer, tx-topic, kafka-config]
+(defrecord KafkaTxLog [^KafkaProducer producer, ^KafkaConsumer latest-submitted-tx-consumer, tx-topic, kafka-config]
   Closeable
   (close [_])
 
@@ -131,16 +132,22 @@
       (when (pos? end-offset)
         {:crux.tx/tx-id (dec end-offset)}))))
 
-(defrecord KafkaDocumentStore [^KafkaProducer producer, doc-topic]
+(defrecord KafkaDocumentStore [^KafkaProducer producer, object-store, doc-topic]
   Closeable
   (close [_])
 
-  db/DocumentStore
-  (submit-docs [this id-and-docs]
+  db/ObjectStore
+  (put-objects [this id-and-docs]
     (doseq [[content-hash doc] id-and-docs]
       @(->> (ProducerRecord. doc-topic content-hash doc)
             (.send producer)))
-    (.flush producer)))
+    (.flush producer))
+  (get-single-object [this snapshot k]
+    (db/get-single-object object-store snapshot k))
+  (get-objects [this snapshot ks]
+    (db/get-objects object-store snapshot ks))
+  (known-keys? [this snapshot ks]
+    (db/known-keys? object-store snapshot ks)))
 
 (defn- group-name []
   (str/trim (or (System/getenv "HOSTNAME")
@@ -180,8 +187,7 @@
                             (.value)
                             (nippy/fast-thaw))
         ready? (db/docs-indexed? indexer content-hashes)
-        {:crux.tx/keys [tx-time
-                        tx-id]} (tx-record->tx-log-entry tx-record)]
+        {:crux.tx/keys [tx-time tx-id]} (tx-record->tx-log-entry tx-record)]
     (if ready?
       (log/info "Ready for indexing of tx" tx-id (cio/pr-edn-str tx-time))
       (log/info "Delaying indexing of tx" tx-id (cio/pr-edn-str tx-time)))
@@ -212,7 +218,8 @@
   (let [docs (->> records
                   (into {} (map (fn [^ConsumerRecord record]
                                   [(c/new-id (.key record)) (.value record)]))))]
-    (db/put-objects object-store docs)
+    (assert (instance? KafkaDocumentStore object-store)
+      (db/put-objects (:object-store object-store) docs))
     (db/index-docs indexer docs)))
 
 (def doc-indexing-consumer
@@ -229,26 +236,28 @@
    :args default-options})
 
 (defn index-documents-from-txes
-  [indexer document-store object-store records]
+  [indexer object-store kv-store records]
   (doseq [^ConsumerRecord tx-record records]
     (let [content-hashes (->> (.lastHeader (.headers tx-record)
                                            (str :crux.tx/docs))
                               (.value)
                               (nippy/fast-thaw))]
-      (let [docs (db/fetch-docs document-store content-hashes)]
-        (db/put-objects object-store docs)
-        (db/index-docs indexer docs)))))
+      (with-open [snapshot (kv/new-snapshot kv-store)]
+        (if (db/known-keys? object-store snapshot content-hashes)
+          (let [docs (db/get-objects object-store snapshot content-hashes)]
+            (db/index-docs indexer docs))
+          (log/error "Documents not all in object-store" content-hashes))))))
 
 (def doc-indexing-from-tx-topic-consumer
-  {:start-fn (fn [{:keys [crux.node/indexer crux.node/document-store crux.node/object-store]}
+  {:start-fn (fn [{:keys [crux.node/indexer crux.node/object-store crux.node/kv-store]}
                   {::keys [tx-topic doc-group-id] :as options}]
                (kc/start-indexing-consumer {:indexer indexer
                                             :offsets :crux.tx-doc-log/consumer-state
                                             :kafka-config (derive-kafka-config options)
                                             :group-id doc-group-id
                                             :topic tx-topic
-                                            :index-fn (partial index-documents-from-txes indexer document-store object-store)}))
-   :deps [:crux.node/indexer :crux.node/document-store :crux.node/object-store ::tx-indexing-consumer]
+                                            :index-fn (partial index-documents-from-txes indexer object-store kv-store)}))
+   :deps [:crux.node/indexer :crux.node/object-store :crux.node/kv-store ::tx-indexing-consumer]
    :args (assoc default-options
                 ::doc-group-id {:doc "Kafka client group.id for ingesting documents using tx topic"
                                 :default (str "documents-" (group-name))
@@ -276,22 +285,23 @@
    :args default-options})
 
 (def tx-log
-  {:start-fn (fn [{:keys [crux.node/document-store ::producer ::latest-submitted-tx-consumer]}
+  {:start-fn (fn [{:keys [::producer ::latest-submitted-tx-consumer]}
                   {:keys [crux.kafka/tx-topic] :as options}]
-               (->KafkaTxLog document-store producer latest-submitted-tx-consumer tx-topic (derive-kafka-config options)))
-   :deps [::producer ::latest-submitted-tx-consumer :crux.node/document-store]
+               (->KafkaTxLog producer latest-submitted-tx-consumer tx-topic (derive-kafka-config options)))
+   :deps [::producer ::latest-submitted-tx-consumer]
    :args default-options})
 
 (def document-store
-  {:start-fn (fn [{::keys [producer]} {:keys [crux.kafka/doc-topic] :as options}]
-               (->KafkaDocumentStore producer doc-topic))
-   :deps [::producer]
+  {:start-fn (fn [{::keys [producer object-store]} {:keys [crux.kafka/doc-topic] :as options}]
+               (->KafkaDocumentStore producer object-store doc-topic))
+   :deps [::producer ::object-store]
    :args default-options})
 
 (def topology
   (merge n/base-topology
          {:crux.node/tx-log tx-log
-          :crux.node/document-store document-store
+          :crux.node/object-store document-store
+          ::object-store 'crux.object-store/kv-object-store
           ::admin-client admin-client
           ::admin-wrapper admin-wrapper
           ::producer producer
