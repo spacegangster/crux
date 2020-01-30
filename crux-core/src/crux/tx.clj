@@ -324,30 +324,40 @@
 
     (bus/send bus {::bus/event-type ::indexing-docs, :doc-ids (set (keys docs))})
 
-    (let [{docs-to-evict true, docs-to-upsert false} (group-by (comp boolean idx/evicted-doc? val) docs)
+    (let [_ (->> docs
+                 (mapcat (fn [[k doc]] (idx/doc-idx-keys k doc)))
+                 (idx/store-doc-idx-keys kv-store))
 
-          _ (when (seq docs-to-upsert)
-              (->> docs-to-upsert
-                   (mapcat (fn [[k doc]] (idx/doc-idx-keys k doc)))
-                   (idx/store-doc-idx-keys kv-store)))
-
-          docs-to-remove (when (seq docs-to-evict)
-                           (with-open [snapshot (kv/new-snapshot kv-store)]
-                             (let [existing-docs (db/get-objects object-store snapshot (keys docs-to-evict))]
-                               (println "Unindexoing existing docs" existing-docs)
-                               (->> existing-docs
-                                    (mapcat (fn [[k doc]] (idx/doc-idx-keys k doc)))
-                                    (idx/delete-doc-idx-keys kv-store))
-
-                               existing-docs)))
-
-          docs-stats (concat (->> (vals docs-to-upsert)
-                                  (map #(idx/doc-predicate-stats % false)))
-
-                             (->> (vals docs-to-remove)
-                                  (map #(idx/doc-predicate-stats % true))))]
+          docs-stats (->> (vals docs)
+                          (map #(idx/doc-predicate-stats % false)))]
 
       (bus/send bus {::bus/event-type ::indexed-docs, :doc-ids (set (keys docs))})
+
+      (let [stats-fn ^Runnable #(idx/update-predicate-stats kv-store docs-stats)]
+        (if stats-executor
+          (.submit stats-executor stats-fn)
+          (stats-fn)))))
+
+  (evict-docs [_ tombstones]
+    (when-let [missing-ids (seq (remove :crux.db/id (vals tombstones)))]
+      (throw (IllegalArgumentException.
+              (str "Missing required attribute :crux.db/id: " (cio/pr-edn-str missing-ids)))))
+
+    (bus/send bus {::bus/event-type ::evicting-docs, :doc-ids (set (keys tombstones))})
+
+    (let [docs-to-remove (with-open [snapshot (kv/new-snapshot kv-store)]
+                           (let [existing-docs (db/get-objects object-store snapshot (keys tombstones))]
+                             (println "Unindexoing existing docs" existing-docs)
+                             (->> existing-docs
+                                  (mapcat (fn [[k doc]] (idx/doc-idx-keys k doc)))
+                                  (idx/delete-doc-idx-keys kv-store))
+
+                             existing-docs))
+
+          docs-stats (->> (vals docs-to-remove)
+                          (map #(idx/doc-predicate-stats % true)))]
+
+      (bus/send bus {::bus/event-type ::evicted-docs, :doc-ids (set (keys tombstones))})
 
       (let [stats-fn ^Runnable #(idx/update-predicate-stats kv-store docs-stats)]
         (if stats-executor
@@ -386,8 +396,7 @@
           (if (not= res ::aborted)
             (do
               (when-let [tombstones (not-empty (:tombstones res))]
-                ;; that should 100% kill it:
-                (db/index-docs this tombstones)
+                (db/evict-docs this tombstones)
                 (db/put-objects object-store tombstones))
 
               (kv/store kv-store (->> (conj (->> (get-in res [:history :etxs]) (mapcat val) (mapcat etx->kvs))
