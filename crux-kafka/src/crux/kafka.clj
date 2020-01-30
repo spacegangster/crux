@@ -79,14 +79,14 @@
           (when-not (instance? TopicExistsException cause)
             (throw e)))))))
 
-(defn- ensure-topic-exists [admin-client topic topic-config partitions {:keys [crux.kafka/replication-factor
-                                                                               crux.kafka/create-topics]}]
+(defn- ensure-topic-exists [^AdminClient admin-client topic topic-config partitions check-count?
+                            {:keys [crux.kafka/replication-factor crux.kafka/create-topics]}]
   (when create-topics
-    (create-topic admin-client topic partitions replication-factor topic-config)))
+    (create-topic admin-client topic partitions replication-factor topic-config))
 
-(defn- ensure-tx-topic-has-single-partition [^AdminClient admin-client tx-topic]
-  (let [name->description @(.all (.describeTopics admin-client [tx-topic]))]
-    (assert (= 1 (count (.partitions ^TopicDescription (get name->description tx-topic)))))))
+  (when check-count?
+    (let [name->description @(.all (.describeTopics admin-client [topic]))]
+      (assert (= partitions (count (.partitions ^TopicDescription (get name->description topic))))))))
 
 (defn tx-record->tx-log-entry [^ConsumerRecord record]
   {:crux.tx.event/tx-events (.value record)
@@ -196,8 +196,7 @@
 (def tx-indexing-consumer
   {:start-fn (fn [{:keys [crux.kafka/admin-client crux.node/indexer]}
                   {::keys [tx-topic group-id] :as options}]
-               (ensure-topic-exists admin-client tx-topic tx-topic-config 1 options)
-               (ensure-tx-topic-has-single-partition admin-client tx-topic)
+               (ensure-topic-exists admin-client tx-topic tx-topic-config 1 true options)
                (kc/start-indexing-consumer {:indexer indexer
                                             :offsets :crux.tx-log/consumer-state
                                             :kafka-config (derive-kafka-config options)
@@ -219,7 +218,7 @@
 (def doc-indexing-consumer
   {:start-fn (fn [{:keys [crux.kafka/admin-client crux.node/indexer crux.node/object-store]}
                   {::keys [doc-topic doc-partitions group-id] :as options}]
-               (ensure-topic-exists admin-client doc-topic doc-topic-config doc-partitions options)
+               (ensure-topic-exists admin-client doc-topic doc-topic-config doc-partitions false options)
                (kc/start-indexing-consumer {:indexer indexer
                                             :offsets :crux.doc-log/consumer-state
                                             :kafka-config (derive-kafka-config options)
